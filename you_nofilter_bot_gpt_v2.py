@@ -1,28 +1,27 @@
-
+import os
+import openai
+import logging
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    filters,
     ContextTypes,
     ConversationHandler,
+    filters,
 )
-import openai
-import logging
-import os
 
-# ==== ВСТАВЬ СВОИ КЛЮЧИ ====
+# ==== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
 openai.api_key = OPENAI_API_KEY
 
 # ==== ЛОГИ ====
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# ==== КОНСТАНТЫ ====
+# ==== СТАДИИ СЕССИИ ====
 SESSION = range(1)
 
 # ==== СТАРТ ====
@@ -33,7 +32,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return SESSION
 
-# ==== СЕССИЯ С GPT ====
+# ==== ОБРАБОТКА СООБЩЕНИЙ ====
 async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text
     context.user_data["history"].append({"role": "user", "content": user_input})
@@ -52,23 +51,34 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
     return SESSION
 
-# ==== СБРОС ====
+# ==== ОТМЕНА / СБРОС ====
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("Сессия завершена. Напиши /start, чтобы начать заново.")
     return ConversationHandler.END
 
+# ==== ГЛАВНЫЙ БЛОК ЗАПУСКА ====
+async def main():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_session)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    app.add_handler(conv_handler)
+
+    # Настройка webhook
+    await app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.getenv("PORT", 10000)),
+        webhook_url=WEBHOOK_URL,
+    )
+
 # ==== ЗАПУСК ====
-app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
-    states={
-        SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_session)],
-    },
-    fallbacks=[CommandHandler("cancel", cancel)],
-)
-
-app.add_handler(conv_handler)
-print("Бот запущен.")
-app.run_polling()
+import asyncio
+if __name__ == "__main__":
+    asyncio.run(main())
