@@ -10,6 +10,7 @@ from telegram.ext import (
 )
 import openai
 import logging
+import os
 
 # ==== ВСТАВЬ СВОИ КЛЮЧИ ====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
