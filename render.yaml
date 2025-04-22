@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: you-nofilter-bot
+    env: python
+    plan: free
+    buildCommand: ""
+    startCommand: python you_nofilter_bot_gpt_v2.py
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
