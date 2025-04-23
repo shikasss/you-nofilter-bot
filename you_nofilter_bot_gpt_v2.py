@@ -65,9 +65,18 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not has_access(context, user_id):
         if context.user_data["used"] >= FREE_LIMIT:
+            # 💳 Пересылаем сообщение админу
+            try:
+                caption = f"💳 Запрос на доступ от @{update.effective_user.username or 'без username'} (ID: {user_id})"
+                await update.message.forward(chat_id=ADMIN_ID)
+                await context.bot.send_message(chat_id=ADMIN_ID, text=caption)
+            except Exception as e:
+                logging.error(f"Ошибка пересылки в handle_session: {e}")
+
+            # ⛔ Сообщаем пользователю
             await update.message.reply_text(
-                f"Ты достиг лимита бесплатных сообщений."
-                f"💳 Чтобы продолжить, отправь *$5 (доступ на 1 месяц)* на ЮMoney: `{YUMONEY_ACCOUNT}`"
+                f"Ты достиг лимита бесплатных сообщений.\n\n"
+                f"💳 Чтобы продолжить, отправь *$5 (доступ на 1 месяц)* на ЮMoney: `{YUMONEY_ACCOUNT}`\n"
                 f"Затем пришли скрин оплаты — и тебе будет выдан доступ.",
                 parse_mode="Markdown"
             )
@@ -93,6 +102,7 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
     return SESSION
 
+
 async def handle_post_limit_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -116,8 +126,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
      await update.message.reply_text(
-                f"Ты достиг лимита бесплатных сообщений."
-                f"💳 Чтобы продолжить, отправь *$5 (доступ на 1 месяц)* на ЮMoney: `{YUMONEY_ACCOUNT}`"
+                f"Ты достиг лимита бесплатных сообщений.\n\n"
+                f"💳 Чтобы продолжить, отправь *$5 (доступ на 1 месяц)* на ЮMoney: `{YUMONEY_ACCOUNT}`\n"
                 f"Затем пришли скрин оплаты — и тебе будет выдан доступ.",
                 parse_mode="Markdown"
             )
