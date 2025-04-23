@@ -1,7 +1,7 @@
 import os
 import openai
 import logging
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -24,15 +24,30 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 # ==== СТАДИИ СЕССИИ ====
 SESSION = range(1)
 
-# ==== СТАРТ ====
+# ==== КЛАВИАТУРА ====
+main_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton("🧠 Начать сессию")],
+        [KeyboardButton("💳 Купить доступ"), KeyboardButton("❓ О боте")]
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=False
+)
+
+# ==== ОБРАБОТЧИК СТАРТА ====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["history"] = []
     await update.message.reply_text(
-        "Ты. Без фильтра.\n\nМесто, где можно быть настоящим.\n\nНапиши, что у тебя внутри — и мы начнём."
+        "Привет! Я — психологический бот.\nВыбери, с чего начнём:",
+        reply_markup=main_keyboard
     )
+
+# ==== СТАРТ СЕССИИ ====
+async def begin_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["history"] = []
+    await update.message.reply_text("Хорошо. Напиши, что у тебя внутри — и мы начнём.")
     return SESSION
 
-# ==== ОБРАБОТКА СООБЩЕНИЙ ====
+# ==== СЕССИЯ GPT ====
 async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text
     context.user_data["history"].append({"role": "user", "content": user_input})
@@ -51,50 +66,40 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
     return SESSION
 
-# ==== ОТМЕНА / СБРОС ====
+# ==== СБРОС ====
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("Сессия завершена. Напиши /start, чтобы начать заново.")
+    await update.message.reply_text("Сессия завершена. Нажми «🧠 Начать сессию», чтобы начать заново.")
     return ConversationHandler.END
 
-# ==== ГЛАВНЫЙ БЛОК ЗАПУСКА ====
-async def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_session)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
+# ==== ОПЛАТА ====
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "💳 Платёжная система скоро будет подключена.\nПока что ты можешь использовать все функции бесплатно."
     )
 
-    app.add_handler(conv_handler)
-
-    # Настройка webhook
-    await app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.getenv("PORT", 10000)),
-        webhook_url=WEBHOOK_URL,
+# ==== О БОТЕ ====
+async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "❓ Этот бот — твой психологический помощник.\nОн поможет разобраться в себе, задать важные вопросы и посмотреть на себя по-новому.\n\nВсе разговоры конфиденциальны. Ты. Без фильтра."
     )
 
 # ==== ЗАПУСК ====
 if __name__ == "__main__":
-    import asyncio
-
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_session)],
-        },
+        entry_points=[MessageHandler(filters.Regex("🧠 Начать сессию"), begin_session)],
+        states={SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_session)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Regex("💳 Купить доступ"), buy))
+    app.add_handler(MessageHandler(filters.Regex("❓ О боте"), about))
+    app.add_handler(CommandHandler("menu", start))
 
-    # Запуск webhook напрямую
     app.run_webhook(
         listen="0.0.0.0",
         port=int(os.getenv("PORT", 10000)),
