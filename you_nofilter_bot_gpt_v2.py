@@ -153,13 +153,15 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     conv_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("🧠 Начать сессию"), begin_session)],
-        states={SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_session)]},
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
+    entry_points=[
+        CommandHandler("start", start),  # ← добавлено сюда
+        MessageHandler(filters.Regex("🧠 Начать сессию"), begin_session)
+    ],
+    states={SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_session)]},
+    fallbacks=[CommandHandler("cancel", cancel)],
+)
 
     app.add_handler(conv_handler)
-    app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("menu", start))
     app.add_handler(CommandHandler("unlock", unlock))
     app.add_handler(MessageHandler(filters.Regex("💳 Купить доступ"), buy))
