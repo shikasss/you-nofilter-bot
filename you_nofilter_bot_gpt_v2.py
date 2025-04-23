@@ -1,5 +1,6 @@
 
 import os
+import json
 import openai
 import logging
 from datetime import datetime, timedelta
@@ -19,21 +20,38 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 openai.api_key = OPENAI_API_KEY
-
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-SESSION = range(1)
+SESSION, ASK_CONTACT = range(2)
 YUMONEY_ACCOUNT = "410015497173415"
-FREE_LIMIT = 3
+FREE_LIMIT = 10
+USED_FILE = "used_messages.json"
 
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton("🧠 Начать сессию")],
-        [KeyboardButton("💳 Купить доступ"), KeyboardButton("❓ О боте")]
+        KeyboardButton("❓ О боте")]
     ],
     resize_keyboard=True,
     one_time_keyboard=False
 )
+
+def load_used_data():
+    if os.path.exists(USED_FILE):
+        with open(USED_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_used_data(data):
+    with open(USED_FILE, "w") as f:
+        json.dump(data, f)
+
+used_data = load_used_data()
+
+def has_access(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    access = context.application.bot_data.get("access_list", {})
+    until = access.get(user_id)
+    return until and until > datetime.now()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_photo(
@@ -41,49 +59,34 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         caption="Ты. Без фильтра.\n\nМесто, где можно быть настоящим."
     )
     context.user_data["history"] = []
-    context.user_data["used"] = 0
     await update.message.reply_text(
         "Хорошо. Напиши, что у тебя внутри — и мы начнём.",
         reply_markup=main_keyboard
     )
     return SESSION
 
-async def begin_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["history"] = []
-    context.user_data["used"] = 0
-    await update.message.reply_text("Хорошо. Напиши, что у тебя внутри — и мы начнём.")
-    return SESSION
-
-def has_access(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    access = context.application.bot_data.get("access_list", {})
-    until = access.get(user_id)
-    return until and until > datetime.now()
-
 async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    context.user_data.setdefault("used", 0)
+    user_id = str(update.effective_user.id)
+    context.user_data.setdefault("history", [])
 
-    if not has_access(context, user_id):
-        if context.user_data["used"] >= FREE_LIMIT:
-            # 💳 Пересылаем сообщение админу
-            try:
-                caption = f"💳 Запрос на доступ от @{update.effective_user.username or 'без username'} (ID: {user_id})"
-                await update.message.forward(chat_id=ADMIN_ID)
-                await context.bot.send_message(chat_id=ADMIN_ID, text=caption)
-            except Exception as e:
-                logging.error(f"Ошибка пересылки в handle_session: {e}")
-
-            # ⛔ Сообщаем пользователю
+    if not has_access(context, int(user_id)):
+        count = used_data.get(user_id, 0)
+        if count >= FREE_LIMIT:
             await update.message.reply_text(
-                f"Ты достиг лимита бесплатных сообщений.\n\n"
-                f"💳 Чтобы продолжить, отправь *$5 (доступ на 1 месяц)* на ЮMoney: `{YUMONEY_ACCOUNT}`\n"
-                f"Затем пришли скрин оплаты — и тебе будет выдан доступ.",
-                parse_mode="Markdown"
+                f"Ты использовал {FREE_LIMIT} бесплатных сообщений.\n\n"
+                f"🔓 Хочешь, чтобы я связался с тобой и открыл доступ?",
+                reply_markup=ReplyKeyboardMarkup(
+                    keyboard=[[KeyboardButton("Хочу"), KeyboardButton("Не надо")]],
+                    resize_keyboard=True,
+                    one_time_keyboard=True
+                )
             )
-            await update.message.reply_text("💳 После оплаты нажми /menu", reply_markup=main_keyboard)
-            return SESSION
+            return ASK_CONTACT
         else:
-            context.user_data["used"] += 1
+            used_data[user_id] = count + 1
+            save_used_data(used_data)
+            left = FREE_LIMIT - used_data[user_id]
+            await update.message.reply_text(f"🧭 Осталось бесплатных сообщений: {left}")
 
     user_input = update.message.text
     context.user_data["history"].append({"role": "user", "content": user_input})
@@ -102,35 +105,27 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
     return SESSION
 
-
-async def handle_post_limit_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ask_contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    username = update.effective_user.username or "без username"
+    choice = update.message.text.strip().lower()
 
-    if has_access(context, user_id):
-        return
+    if choice == "хочу":
+        text = f"📨 Пользователь @{username} (ID: {user_id}) хочет, чтобы с ним связались."
+        await context.bot.send_message(chat_id=ADMIN_ID, text=text)
+        await update.message.reply_text("Спасибо, я передал твой запрос. Я свяжусь с тобой позже 🤝", reply_markup=main_keyboard)
+    else:
+        await update.message.reply_text("Хорошо, доступ останется ограничен. Если передумаешь — нажми /menu.", reply_markup=main_keyboard)
 
-    if context.user_data.get("used", 0) < FREE_LIMIT:
-        return
-
-    try:
-        caption = f"💳 Запрос на доступ от @{update.effective_user.username or 'без username'} (ID: {user_id})"
-        await update.message.forward(chat_id=ADMIN_ID)
-        await context.bot.send_message(chat_id=ADMIN_ID, text=caption)
-    except Exception as e:
-        logging.error(f"Ошибка при пересылке: {e}")
+    return SESSION
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("Сессия завершена. Нажми «🧠 Начать сессию», чтобы начать заново.")
     return ConversationHandler.END
 
-async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-     await update.message.reply_text(
-                f"Ты достиг лимита бесплатных сообщений.\n\n"
-                f"💳 Чтобы продолжить, отправь *$5 (доступ на 1 месяц)* на ЮMoney: `{YUMONEY_ACCOUNT}`\n"
-                f"Затем пришли скрин оплаты — и тебе будет выдан доступ.",
-                parse_mode="Markdown"
-            )
+# async def buy(...) [ОТКЛЮЧЕНО]
+    pass  # отключено
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -163,20 +158,21 @@ if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     conv_handler = ConversationHandler(
-    entry_points=[
-        CommandHandler("start", start),  # ← добавлено сюда
-        MessageHandler(filters.Regex("🧠 Начать сессию"), begin_session)
-    ],
-    states={SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_session)]},
-    fallbacks=[CommandHandler("cancel", cancel)],
-)
+        entry_points=[
+            CommandHandler("start", start),
+            MessageHandler(filters.Regex("🧠 Начать сессию"), start)
+        ],
+        states={
+            SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_session)],
+            ASK_CONTACT: [MessageHandler(filters.TEXT, ask_contact_handler)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
 
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("menu", start))
     app.add_handler(CommandHandler("unlock", unlock))
-    app.add_handler(MessageHandler(filters.Regex("💳 Купить доступ"), buy))
-    app.add_handler(MessageHandler(filters.Regex("❓ О боте"), about))
-    app.add_handler(MessageHandler(filters.ALL, handle_post_limit_media))
+        app.add_handler(MessageHandler(filters.Regex("❓ О боте"), about))
 
     app.run_webhook(
         listen="0.0.0.0",
