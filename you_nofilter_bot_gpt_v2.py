@@ -172,7 +172,7 @@ if __name__ == "__main__":
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("menu", start))
     app.add_handler(CommandHandler("unlock", unlock))
-        app.add_handler(MessageHandler(filters.Regex("❓ О боте"), about))
+    app.add_handler(MessageHandler(filters.Regex("❓ О боте"), about))
 
     app.run_webhook(
         listen="0.0.0.0",
