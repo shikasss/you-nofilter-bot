@@ -14,6 +14,29 @@ from telegram.ext import (
     filters,
 )
 
+SYSTEM_PROMPT = """
+Ты — эмпатичный, живой, но профессиональный ИИ-психолог.  
+Твоя главная цель — помочь человеку разобраться в себе, сохраняя тёплую атмосферу беседы.
+
+★ Стиль  
+• Говори простым, разговорным языком — без канцелярита.  
+• Лёгкий «хамелеон»: подхватывай настроение собеседника, но не теряй спокойствия и профессионализма.  
+• Не давай готовых советов; веди к самопониманию вопросами и мягкими наблюдениями.  
+• Избегай осуждения, морализаторства.
+
+★ Если человек уходит в сторону  
+1. Коротко откликнись на новый фрагмент.  
+2. Задай уточняющий вопрос, который мягко вернёт к главной теме.  
+3. Если он явно хочет сменить тему — прими выбор и свяжи новое с основной линией.
+
+★ Каждая твоя реплика должна  
+• дать ощущение «меня услышали»,  
+• сохранить интерес,  
+• подсветить следующий микрошаг к осознанию.
+
+Нельзя: директивные советы, клише «успокойся», медицинские диагнозы.
+"""
+
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -65,16 +88,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return SESSION
 
-async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Основной обработчик диалога.
+       → считает глобальный лимит,
+       → калибрует «вайб»,
+       → отправляет запрос в GPT-4o-mini."""
     user_id = str(update.effective_user.id)
+    user_msg = update.message.text
+
+    # ── Инициализируем историю в user_data ────────────────────
     context.user_data.setdefault("history", [])
 
+    # ── Проверяем доступ/лимит ────────────────────────────────
     if not has_access(context, int(user_id)):
-        count = used_data.get(user_id, 0)
-        if count >= FREE_LIMIT:
+        used = used_data.get(user_id, 0)
+
+        # 1. Лимит исчерпан → предлагаем оставить контакт
+        if used >= FREE_LIMIT:
             await update.message.reply_text(
                 f"Ты использовал {FREE_LIMIT} бесплатных сообщений.\n\n"
-                f"🔓 Хочешь, чтобы я связался с тобой и открыл доступ?",
+                "🔓 Хочешь, чтобы я связался с тобой и открыл доступ?",
                 reply_markup=ReplyKeyboardMarkup(
                     keyboard=[[KeyboardButton("Хочу"), KeyboardButton("Не надо")]],
                     resize_keyboard=True,
@@ -82,18 +115,34 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             )
             return ASK_CONTACT
-        else:
-            used_data[user_id] = count + 1
-            save_used_data(used_data)
-            left = FREE_LIMIT - used_data[user_id]
-            await update.message.reply_text(f"🧭 Осталось бесплатных сообщений: {left}")
 
-    user_input = update.message.text
-    context.user_data["history"].append({"role": "user", "content": user_input})
+        # 2. Лимит не исчерпан → увеличиваем счётчик, сохраняем
+        used_data[user_id] = used + 1
+        save_used_data(used_data)
+        left = FREE_LIMIT - used_data[user_id]
+        await update.message.reply_text(f"🧭 Осталось бесплатных сообщений: {left}")
 
-    prompt = [
-        {"role": "system", "content": "Ты — эмпатичный психолог. Отвечай с теплом и участием. Помоги человеку понять себя. Не давай готовых советов, а мягко направляй."}
-    ] + context.user_data["history"]
+    # ── Добавляем сообщение пользователя в историю ────────────
+    context.user_data["history"].append({"role": "user", "content": user_msg})
+
+    # ── Калибруем «вайб» ──────────────────────────────────────
+    tone       = detect_tone(user_msg)                   # текущий тон
+    prev_tone  = context.user_data.get("prev_tone")      # какой был раньше
+    system_prompts = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    if tone != prev_tone:                                # добавляем только при смене
+        system_prompts.append({
+            "role": "system",
+            "content": (
+                f"У пользователя сейчас настроение: {tone}. "
+                "Подстрой лексику и темп под это настроение, "
+                "но сохраняй спокойствие и профессионализм."
+            )
+        })
+        context.user_data["prev_tone"] = tone
+
+    # ── Финальный prompt и запрос к OpenAI ────────────────────
+    prompt = system_prompts + context.user_data["history"]
 
     response = openai.chat.completions.create(
         model="gpt-4o-mini",
@@ -103,7 +152,8 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = response.choices[0].message.content
     context.user_data["history"].append({"role": "assistant", "content": reply})
     await update.message.reply_text(reply)
-    return SESSION
+
+    return SESSION        # остаёмся в состоянии активной сессии
 
 async def ask_contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -118,6 +168,22 @@ async def ask_contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("Хорошо, доступ останется ограничен. Если передумаешь — нажми /menu.", reply_markup=main_keyboard)
 
     return SESSION
+
+def detect_tone(text: str) -> str:
+    """Грубо определяем настроение по ключевым словам."""
+    t = text.lower()
+
+    joy     = {"ура", "круто", "супер", "рад", "счастл"}
+    sadness = {"груст", "тоск", "плохо", "тяжело", "депресс"}
+    anger   = {"бесит", "злюсь", "ненавиж", "раздраж"}
+    calm    = {"спокойно", "норм", "ладно", "ок"}
+
+    if any(w in t for w in joy):      return "joy"
+    if any(w in t for w in sadness):  return "sadness"
+    if any(w in t for w in anger):    return "anger"
+    if any(w in t for w in calm):     return "calm"
+    return "neutral"
+# ────────────────────────────────────────────────────────────────
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
