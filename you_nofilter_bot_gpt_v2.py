@@ -79,6 +79,24 @@ async def main():
     )
 
 # ==== ЗАПУСК ====
-import asyncio
 if __name__ == "__main__":
-    asyncio.run(main())
+    import asyncio
+
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_session)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    app.add_handler(conv_handler)
+
+    # Запуск webhook напрямую
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.getenv("PORT", 10000)),
+        webhook_url=WEBHOOK_URL,
+    )
