@@ -42,7 +42,7 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ] + context.user_data["history"]
 
     response = openai.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model="gpt-4o-mini",
         messages=prompt
     )
 
