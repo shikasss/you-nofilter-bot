@@ -38,9 +38,7 @@ main_keyboard = ReplyKeyboardMarkup(
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_photo(
         photo="https://chat.openai.com/mnt/data/ii-psychologist-cover.png",
-        caption="Ты. Без фильтра.
-
-Место, где можно быть настоящим."
+        caption="Ты. Без фильтра.\nМесто, где можно быть настоящим."
     )
     await update.message.reply_text("Выбери, с чего начнём:", reply_markup=main_keyboard)
 
