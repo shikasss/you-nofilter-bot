@@ -60,12 +60,8 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not has_access(context, user_id):
         if context.user_data["used"] >= FREE_LIMIT:
             await update.message.reply_text(
-                f"Ты достиг лимита бесплатных сообщений.
-
-"
-                f"💳 Чтобы продолжить, отправь *$5 (доступ на 1 месяц)* на ЮMoney:
-`{YUMONEY_ACCOUNT}`
-"
+                f"Ты достиг лимита бесплатных сообщений."
+                f"💳 Чтобы продолжить, отправь *$5 (доступ на 1 месяц)* на ЮMoney:`{YUMONEY_ACCOUNT}`"
                 f"Затем пришли скрин оплаты — и тебе будет выдан доступ.",
                 parse_mode="Markdown"
             )
