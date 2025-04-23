@@ -36,6 +36,10 @@ main_keyboard = ReplyKeyboardMarkup(
 
 # ==== ОБРАБОТЧИК СТАРТА ====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_photo(
+    photo="https://chat.openai.com/mnt/data/ii-psychologist-cover.png",
+    caption="Ты. Без фильтра.\n\nМесто, где можно быть настоящим."
+    )
     await update.message.reply_text(
         "Привет! Я — психологический бот.\nВыбери, с чего начнём:",
         reply_markup=main_keyboard
