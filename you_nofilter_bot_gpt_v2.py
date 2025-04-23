@@ -1,6 +1,8 @@
+
 import os
 import openai
 import logging
+from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
@@ -11,20 +13,19 @@ from telegram.ext import (
     filters,
 )
 
-# ==== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ====
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 openai.api_key = OPENAI_API_KEY
 
-# ==== ЛОГИ ====
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# ==== СТАДИИ СЕССИИ ====
 SESSION = range(1)
+YUMONEY_ACCOUNT = "410015497173415"
+FREE_LIMIT = 3
 
-# ==== КЛАВИАТУРА ====
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton("🧠 Начать сессию")],
@@ -34,25 +35,47 @@ main_keyboard = ReplyKeyboardMarkup(
     one_time_keyboard=False
 )
 
-# ==== ОБРАБОТЧИК СТАРТА ====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_photo(
-    photo="https://chat.openai.com/mnt/data/ii-psychologist-cover.png",
-    caption="Ты. Без фильтра.\n\nМесто, где можно быть настоящим."
-    )
-    await update.message.reply_text(
-        "Привет! Я — психологический бот.\nВыбери, с чего начнём:",
-        reply_markup=main_keyboard
-    )
+        photo="https://chat.openai.com/mnt/data/ii-psychologist-cover.png",
+        caption="Ты. Без фильтра.
 
-# ==== СТАРТ СЕССИИ ====
+Место, где можно быть настоящим."
+    )
+    await update.message.reply_text("Выбери, с чего начнём:", reply_markup=main_keyboard)
+
 async def begin_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["history"] = []
+    context.user_data["used"] = 0
     await update.message.reply_text("Хорошо. Напиши, что у тебя внутри — и мы начнём.")
     return SESSION
 
-# ==== СЕССИЯ GPT ====
+def has_access(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    access = context.application.bot_data.get("access_list", {})
+    until = access.get(user_id)
+    return until and until > datetime.now()
+
 async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    context.user_data.setdefault("used", 0)
+
+    if not has_access(context, user_id):
+        if context.user_data["used"] >= FREE_LIMIT:
+            await update.message.reply_text(
+                f"Ты достиг лимита бесплатных сообщений.
+
+"
+                f"💳 Чтобы продолжить, отправь *$5 (доступ на 1 месяц)* на ЮMoney:
+`{YUMONEY_ACCOUNT}`
+"
+                f"Затем пришли скрин оплаты — и тебе будет выдан доступ.",
+                parse_mode="Markdown"
+            )
+            await update.message.reply_text("💳 После оплаты нажми /menu", reply_markup=main_keyboard)
+            return SESSION
+        else:
+            context.user_data["used"] += 1
+
     user_input = update.message.text
     context.user_data["history"].append({"role": "user", "content": user_input})
 
@@ -70,25 +93,66 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(reply)
     return SESSION
 
-# ==== СБРОС ====
+async def handle_post_limit_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if has_access(context, user_id):
+        return
+
+    if context.user_data.get("used", 0) < FREE_LIMIT:
+        return
+
+    try:
+        caption = f"💳 Запрос на доступ от @{update.effective_user.username or 'без username'} (ID: {user_id})"
+        await update.message.forward(chat_id=ADMIN_ID)
+        await context.bot.send_message(chat_id=ADMIN_ID, text=caption)
+    except Exception as e:
+        logging.error(f"Ошибка при пересылке: {e}")
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("Сессия завершена. Нажми «🧠 Начать сессию», чтобы начать заново.")
     return ConversationHandler.END
 
-# ==== ОПЛАТА ====
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "💳 Платёжная система скоро будет подключена.\nПока что ты можешь использовать все функции бесплатно."
+        f"💳 Чтобы продолжить, отправь *$5 (в месяц)* на ЮMoney:
+`{YUMONEY_ACCOUNT}`
+"
+        f"После оплаты пришли скрин — и тебе будет выдан доступ вручную.",
+        parse_mode="Markdown"
     )
 
-# ==== О БОТЕ ====
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "❓ Этот бот — твой психологический помощник.\nОн поможет разобраться в себе, задать важные вопросы и посмотреть на себя по-новому.\n\nВсе разговоры конфиденциальны. Ты. Без фильтра."
+        "❓ Этот бот — твой психологический помощник.
+Он помогает разобраться в себе, задать важные вопросы и посмотреть на себя по-новому.
+
+Все разговоры конфиденциальны. Ты. Без фильтра."
     )
 
-# ==== ЗАПУСК ====
+async def unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Только администратор может выполнять эту команду.")
+        return
+
+    parts = update.message.text.split()
+    if len(parts) < 2:
+        await update.message.reply_text("Использование: /unlock <user_id> [дней]")
+        return
+
+    try:
+        user_id = int(parts[1])
+        days = int(parts[2]) if len(parts) > 2 else 30
+    except ValueError:
+        await update.message.reply_text("ID и дни должны быть числами.")
+        return
+
+    access_list = context.application.bot_data.setdefault("access_list", {})
+    access_list[user_id] = datetime.now() + timedelta(days=days)
+
+    await update.message.reply_text(f"✅ Доступ выдан пользователю {user_id} на {days} дней.")
+
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
@@ -100,9 +164,11 @@ if __name__ == "__main__":
 
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", start))
+    app.add_handler(CommandHandler("unlock", unlock))
     app.add_handler(MessageHandler(filters.Regex("💳 Купить доступ"), buy))
     app.add_handler(MessageHandler(filters.Regex("❓ О боте"), about))
-    app.add_handler(CommandHandler("menu", start))
+    app.add_handler(MessageHandler(filters.ALL, handle_post_limit_media))
 
     app.run_webhook(
         listen="0.0.0.0",
