@@ -30,7 +30,7 @@ USED_FILE = "used_messages.json"
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton("🧠 Начать сессию")],
-        KeyboardButton("❓ О боте")]
+        [KeyboardButton("❓ О боте")]
     ],
     resize_keyboard=True,
     one_time_keyboard=False
