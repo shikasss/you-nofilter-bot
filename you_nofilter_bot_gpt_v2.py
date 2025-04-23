@@ -36,11 +36,17 @@ main_keyboard = ReplyKeyboardMarkup(
 )
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_photo(
+   await update.message.reply_photo(
         photo="https://chat.openai.com/mnt/data/ii-psychologist-cover.png",
-        caption="Ты. Без фильтра.\nМесто, где можно быть настоящим."
+        caption="Ты. Без фильтра.\n\nМесто, где можно быть настоящим."
     )
-    await update.message.reply_text("Выбери, с чего начнём:", reply_markup=main_keyboard)
+    context.user_data["history"] = []
+    context.user_data["used"] = 0
+    await update.message.reply_text(
+        "Хорошо. Напиши, что у тебя внутри — и мы начнём.",
+        reply_markup=main_keyboard
+    )
+    return SESSION
 
 async def begin_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["history"] = []
