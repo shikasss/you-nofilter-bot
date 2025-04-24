@@ -61,6 +61,16 @@ main_keyboard = ReplyKeyboardMarkup(
     one_time_keyboard=False
 )
 
+def load_used_data():
+    global used_data
+    if os.path.exists("used_data.json"):
+        with open("used_data.json", "r") as f:
+            used_data = json.load(f)
+
+def save_used_data(data):
+    with open("used_data.json", "w") as f:
+        json.dump(data, f, indent=2)
+
 def load_access_data():
     global access_data
     if os.path.exists("access_data.json"):
