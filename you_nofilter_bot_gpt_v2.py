@@ -61,22 +61,27 @@ main_keyboard = ReplyKeyboardMarkup(
     one_time_keyboard=False
 )
 
-def load_used_data():
-    if os.path.exists(USED_FILE):
-        with open(USED_FILE, "r") as f:
-            return json.load(f)
-    return {}
+def load_access_data():
+    global access_data
+    if os.path.exists("access_data.json"):
+        with open("access_data.json", "r") as f:
+            access_data = json.load(f)
 
-def save_used_data(data):
-    with open(USED_FILE, "w") as f:
-        json.dump(data, f)
+def save_access_data():
+    with open("access_data.json", "w") as f:
+        json.dump(access_data, f, indent=2)
 
 used_data = load_used_data()
 
-def has_access(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    access = context.application.bot_data.get("access_list", {})
-    until = access.get(user_id)
-    return until and until > datetime.now()
+def has_access(user_id: int) -> bool:
+    until_str = access_data.get(str(user_id))
+    if not until_str:
+        return False
+    try:
+        until = datetime.fromisoformat(until_str)
+    except Exception:
+        return False
+    return until > datetime.now()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_photo(
