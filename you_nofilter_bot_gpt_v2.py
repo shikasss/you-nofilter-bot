@@ -52,6 +52,8 @@ YUMONEY_ACCOUNT = "410015497173415"
 FREE_LIMIT = 10
 USED_FILE = "used_messages.json"
 
+access_data = {}
+
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton("🧠 Начать сессию")],
@@ -78,12 +80,14 @@ def load_access_data():
             access_data = json.load(f)
 
 def save_access_data():
+    global access_data
     with open("access_data.json", "w") as f:
         json.dump(access_data, f, indent=2)
 
 used_data = load_used_data()
 
 def has_access(user_id: int) -> bool:
+    global access_data
     until_str = access_data.get(str(user_id))
     if not until_str:
         return False
@@ -216,6 +220,7 @@ async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global access_data
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Только администратор может выполнять эту команду.")
         return
