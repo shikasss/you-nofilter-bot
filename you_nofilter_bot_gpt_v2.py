@@ -117,7 +117,7 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.setdefault("history", [])
 
     # ── Проверяем доступ/лимит ────────────────────────────────
-    if not has_access(context, int(user_id)):
+    if not has_access(int(user_id)):
         used = used_data.get(user_id, 0)
 
         # 1. Лимит исчерпан → предлагаем оставить контакт
