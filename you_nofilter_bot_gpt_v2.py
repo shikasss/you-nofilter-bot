@@ -68,6 +68,8 @@ def load_used_data():
     if os.path.exists("used_data.json"):
         with open("used_data.json", "r") as f:
             used_data = json.load(f)
+    else:
+        used_data = {}  # ← критично важно при первом запуске
 
 def save_used_data(data):
     with open("used_data.json", "w") as f:
@@ -78,6 +80,8 @@ def load_access_data():
     if os.path.exists("access_data.json"):
         with open("access_data.json", "r") as f:
             access_data = json.load(f)
+    else:
+        access_data = {}  # ← обязательно
 
 def save_access_data():
     global access_data
