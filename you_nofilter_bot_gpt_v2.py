@@ -221,13 +221,15 @@ async def unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("ID и дни должны быть числами.")
         return
-
+    access_data[str(user_id)] = (datetime.now() + timedelta(days=days)).isoformat()
+    save_access_data()
     access_list = context.application.bot_data.setdefault("access_list", {})
     access_list[user_id] = datetime.now() + timedelta(days=days)
 
     await update.message.reply_text(f"✅ Доступ выдан пользователю {user_id} на {days} дней.")
 
 if __name__ == "__main__":
+    load_access_data()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     conv_handler = ConversationHandler(
