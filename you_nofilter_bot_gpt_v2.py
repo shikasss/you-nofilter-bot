@@ -88,7 +88,7 @@ def save_access_data():
     with open("access_data.json", "w") as f:
         json.dump(access_data, f, indent=2)
 
-used_data = load_used_data()
+load_used_data()
 
 def has_access(user_id: int) -> bool:
     global access_data
