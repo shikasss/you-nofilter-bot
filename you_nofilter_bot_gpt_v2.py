@@ -101,6 +101,20 @@ def has_access(user_id: int) -> bool:
         return False
     return until > datetime.now()
 
+history_data = {}
+
+def load_history_data():
+    global history_data
+    if os.path.exists("history_data.json"):
+        with open("history_data.json", "r") as f:
+            history_data = json.load(f)
+    else:
+        history_data = {}
+
+def save_history_data():
+    with open("history_data.json", "w") as f:
+        json.dump(history_data, f, indent=2)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_photo(
         photo="https://i.imgur.com/AH7eK7Z.png",
@@ -111,6 +125,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Хорошо. Напиши, что у тебя внутри — и мы начнём.",
         reply_markup=main_keyboard
     )
+    user_id = str(update.effective_user.id)
+    context.user_data["history"] = history_data.get(user_id, [])
     return SESSION
 
 async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -149,6 +165,8 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # ── Добавляем сообщение пользователя в историю ────────────
     context.user_data["history"].append({"role": "user", "content": user_msg})
+    history_data[user_id] = context.user_data["history"]
+    save_history_data()
 
     # ── Калибруем «вайб» ──────────────────────────────────────
     tone       = detect_tone(user_msg)                   # текущий тон
@@ -249,6 +267,7 @@ async def unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == "__main__":
     load_access_data()
+    load_history_data()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     conv_handler = ConversationHandler(
