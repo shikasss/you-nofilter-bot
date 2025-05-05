@@ -263,6 +263,7 @@ if __name__ == "__main__":
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("menu", start))
     app.add_handler(CommandHandler("unlock", unlock))
