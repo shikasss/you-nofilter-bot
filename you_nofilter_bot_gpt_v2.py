@@ -13,6 +13,7 @@ from telegram.ext import (
     ConversationHandler,
     filters,
 )
+from collections import Counter
 
 SYSTEM_PROMPT = """
 Ты — внимательный и эмпатичный ИИ-психолог.  
@@ -227,11 +228,9 @@ def extract_memory(history, limit=8):
         if msg["role"] == "user":
             content = msg["content"].lower()
             for word in content.split():
-                w = word.strip(",.!?"“”")
+                w = word.strip(",.!?\"«»")
                 if len(w) > 3 and w not in {"это", "просто", "очень", "такой", "какой", "когда"}:
                     keywords.append(w)
-    # Выбираем наиболее часто встречающиеся
-    from collections import Counter
     common = [w for w, _ in Counter(keywords).most_common(3)]
     return ", ".join(common) if common else None
 
