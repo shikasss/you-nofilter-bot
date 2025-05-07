@@ -50,7 +50,11 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 SESSION, ASK_CONTACT = range(2)
 YUMONEY_ACCOUNT = "410015497173415"
 FREE_LIMIT = 10
-USED_FILE = "used_messages.json"
+
+DATA_DIR = "/mnt/data"
+USED_FILE = os.path.join(DATA_DIR, "used_data.json")
+ACCESS_FILE = os.path.join(DATA_DIR, "access_data.json")
+HISTORY_FILE = os.path.join(DATA_DIR, "history_data.json")
 
 access_data = {}
 
@@ -65,27 +69,27 @@ main_keyboard = ReplyKeyboardMarkup(
 
 def load_used_data():
     global used_data
-    if os.path.exists("used_data.json"):
-        with open("used_data.json", "r") as f:
+    if os.path.exists(USED_FILE):
+        with open(USED_FILE, "r") as f:
             used_data = json.load(f)
     else:
-        used_data = {}  # ← критично важно при первом запуске
+        used_data = {}
 
 def save_used_data(data):
-    with open("used_data.json", "w") as f:
+    with open(USED_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
 def load_access_data():
     global access_data
-    if os.path.exists("access_data.json"):
-        with open("access_data.json", "r") as f:
+    if os.path.exists(ACCESS_FILE):
+        with open(ACCESS_FILE, "r") as f:
             access_data = json.load(f)
     else:
-        access_data = {}  # ← обязательно
+        access_data = {}
 
 def save_access_data():
     global access_data
-    with open("access_data.json", "w") as f:
+    with open(ACCESS_FILE, "w") as f:
         json.dump(access_data, f, indent=2)
 
 load_used_data()
@@ -105,14 +109,14 @@ history_data = {}
 
 def load_history_data():
     global history_data
-    if os.path.exists("history_data.json"):
-        with open("history_data.json", "r") as f:
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r") as f:
             history_data = json.load(f)
     else:
         history_data = {}
 
 def save_history_data():
-    with open("history_data.json", "w") as f:
+    with open(HISTORY_FILE, "w") as f:
         json.dump(history_data, f, indent=2)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
