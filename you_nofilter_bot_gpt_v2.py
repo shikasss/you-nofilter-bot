@@ -138,21 +138,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SESSION
 
 async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Основной обработчик диалога.
-       → считает глобальный лимит,
-       → калибрует «вайб»,
-       → отправляет запрос в GPT-4o-mini."""
     user_id = str(update.effective_user.id)
     user_msg = update.message.text
 
-    # ── Инициализируем историю в user_data ────────────────────
     context.user_data.setdefault("history", [])
 
-    # ── Проверяем доступ/лимит ────────────────────────────────
     if not has_access(int(user_id)):
         used = used_data.get(user_id, 0)
 
-        # 1. Лимит исчерпан → предлагаем оставить контакт
         if used >= FREE_LIMIT:
             await update.message.reply_text(
                 f"Ты использовал {FREE_LIMIT} бесплатных сообщений.\n\n"
@@ -165,23 +158,25 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return ASK_CONTACT
 
-        # 2. Лимит не исчерпан → увеличиваем счётчик, сохраняем
         used_data[user_id] = used + 1
         save_used_data(used_data)
         left = FREE_LIMIT - used_data[user_id]
         await update.message.reply_text(f"🧭 Осталось бесплатных сообщений: {left}")
 
-    # ── Добавляем сообщение пользователя в историю ────────────
     context.user_data["history"].append({"role": "user", "content": user_msg})
     history_data[user_id] = context.user_data["history"]
     save_history_data()
 
-    # ── Калибруем «вайб» ──────────────────────────────────────
-    tone       = detect_tone(user_msg)                   # текущий тон
-    prev_tone  = context.user_data.get("prev_tone")      # какой был раньше
+    # 🧠 Обновляем «мягкую память»
+    memory = extract_memory(context.user_data["history"])
+    if memory:
+        context.user_data["memory"] = memory
+
+    tone = detect_tone(user_msg)
+    prev_tone = context.user_data.get("prev_tone")
     system_prompts = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-    if tone != prev_tone:                                # добавляем только при смене
+    if tone != prev_tone:
         system_prompts.append({
             "role": "system",
             "content": (
@@ -192,7 +187,12 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         })
         context.user_data["prev_tone"] = tone
 
-    # ── Финальный prompt и запрос к OpenAI ────────────────────
+    if context.user_data.get("memory"):
+        system_prompts.append({
+            "role": "system",
+            "content": f"Ранее пользователь упоминал: {context.user_data['memory']}. Учитывай это, если поможет лучше понять контекст."
+        })
+
     prompt = system_prompts + context.user_data["history"]
 
     response = openai.chat.completions.create(
@@ -204,7 +204,7 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data["history"].append({"role": "assistant", "content": reply})
     await update.message.reply_text(reply)
 
-    return SESSION        # остаёмся в состоянии активной сессии
+    return SESSION
 
 async def ask_contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -219,6 +219,21 @@ async def ask_contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("Хорошо, доступ останется ограничен. Если передумаешь — нажми /menu.", reply_markup=main_keyboard)
 
     return SESSION
+
+def extract_memory(history, limit=8):
+    """Извлекает ключевые слова из последних сообщений пользователя."""
+    keywords = []
+    for msg in history[-limit:]:
+        if msg["role"] == "user":
+            content = msg["content"].lower()
+            for word in content.split():
+                w = word.strip(",.!?"“”")
+                if len(w) > 3 and w not in {"это", "просто", "очень", "такой", "какой", "когда"}:
+                    keywords.append(w)
+    # Выбираем наиболее часто встречающиеся
+    from collections import Counter
+    common = [w for w, _ in Counter(keywords).most_common(3)]
+    return ", ".join(common) if common else None
 
 def detect_tone(text: str) -> str:
     """Грубо определяем настроение по ключевым словам."""
