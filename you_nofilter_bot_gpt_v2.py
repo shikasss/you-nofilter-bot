@@ -308,7 +308,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.Regex("❓ О боте"), about))
 
     # регистрируем endpoint для ЮKassa
-    app._web_app.router.add_post("/ykassa-webhook", ykassa_webhook)
+    app.web_app.router.add_post("/ykassa-webhook", ykassa_webhook)
 
     app.run_webhook(
         listen="0.0.0.0",
