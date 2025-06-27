@@ -5,7 +5,8 @@ from datetime import datetime, timedelta
 from collections import Counter
 
 import openai
-from yookassa import Configuration, Payment, WebhookHandler
+from yookassa import Configuration, Payment
+import hmac, hashlib, base64
 from aiohttp import web
 
 from telegram import (
@@ -67,19 +68,28 @@ SYSTEM_PROMPT = """
 """
 
 # ─── КОНФИГУРАЦИЯ ──────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")         # Telegram webhook URL
-BASE_URL = os.getenv("BASE_URL")               # e.g. https://your-app.onrender.com
-YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID")
+TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
+WEBHOOK_URL       = os.getenv("WEBHOOK_URL")       # URL для Telegram webhook
+BASE_URL          = os.getenv("BASE_URL")          # e.g. https://your-app.onrender.com
+YKASSA_SHOP_ID    = os.getenv("YKASSA_SHOP_ID")
 YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY")
 
 openai.api_key = OPENAI_API_KEY
 logging.basicConfig(level=logging.INFO)
 
-# ЮKassa
+# ─── Настройка ЮKassa ─────────────────────────────────────────────────────────
 Configuration.account_id = YKASSA_SHOP_ID
-Configuration.secret_key = YKASSA_SECRET_KEY
+Configuration.secret_key  = YKASSA_SECRET_KEY
+
+# Секрет для верификации вебхука
+YK_SECRET = YKASSA_SECRET_KEY.encode()
+
+def verify_ykassa_signature(body: bytes, signature: str) -> bool:
+    expected = base64.b64encode(
+        hmac.new(YK_SECRET, body, hashlib.sha256).digest()
+    ).decode()
+    return hmac.compare_digest(expected, signature)
 
 # ─── ПУТИ К ФАЙЛАМ ─────────────────────────────────────────────────────────────
 DATA_DIR     = "/mnt/data"
@@ -102,7 +112,7 @@ used_data    = load_json(USED_FILE)
 access_data  = load_json(ACCESS_FILE)
 history_data = load_json(HISTORY_FILE)
 
-# in-memory map order_id → user_id
+# В памяти: order_id → user_id
 orders = {}
 
 # ─── КОНСТАНТЫ ─────────────────────────────────────────────────────────────────
@@ -140,14 +150,10 @@ def extract_memory(history, limit=8):
 
 def detect_tone(text: str) -> str:
     t = text.lower()
-    if any(w in t for w in ("ура","круто","рад","счаст")):
-        return "joy"
-    if any(w in t for w in ("груст","тоск","плохо","депресс")):
-        return "sadness"
-    if any(w in t for w in ("злюсь","бесит","ненавиж","раздраж")):
-        return "anger"
-    if any(w in t for w in ("спокойно","норм","ладно","ок")):
-        return "calm"
+    if any(w in t for w in ("ура","круто","рад","счаст")):    return "joy"
+    if any(w in t for w in ("груст","тоск","плохо","депресс")): return "sadness"
+    if any(w in t for w in ("злюсь","бесит","ненавиж","раздраж")): return "anger"
+    if any(w in t for w in ("спокойно","норм","ладно","ок")):    return "calm"
     return "neutral"
 
 # ─── ОБРАБОТЧИКИ БОТА ─────────────────────────────────────────────────────────
@@ -158,10 +164,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         photo="https://i.imgur.com/AH7eK7Z.png",
         caption="Ты. Без фильтра.\n\nМесто, где можно быть настоящим."
     )
-    await update.message.reply_text(
-        "Напишите, что у вас на душе.",
-        reply_markup=main_keyboard
-    )
+    await update.message.reply_text("Напишите, что у вас на душе.", reply_markup=main_keyboard)
     return SESSION
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -170,22 +173,22 @@ async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # подмена для callback_query или команды
+    # различаем команду и callback
     if update.callback_query:
         await update.callback_query.answer()
         user_id = update.callback_query.from_user.id
-        send_method = update.callback_query.edit_message_text
+        send = update.callback_query.edit_message_text
     else:
         user_id = update.effective_user.id
-        send_method = update.message.reply_text
+        send = update.message.reply_text
 
     order_id = f"access_{user_id}_{int(datetime.now().timestamp())}"
     payment = Payment.create({
-        "amount": {"value": "5.00", "currency": "RUB"},
-        "confirmation": {"type": "redirect", "return_url": BASE_URL},
-        "capture": True,
+        "amount":      {"value": "5.00", "currency": "RUB"},
+        "confirmation":{"type":"redirect","return_url": BASE_URL},
+        "capture":     True,
         "description": f"Месячный доступ YouNoFilter (пользователь {user_id})",
-        "metadata": {"user_id": str(user_id), "order_id": order_id}
+        "metadata":    {"user_id": str(user_id), "order_id": order_id}
     })
     orders[order_id] = str(user_id)
 
@@ -197,17 +200,16 @@ async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💳 Стоимость доступа: 5 ₽ в месяц.\n\n"
         "Нажмите кнопку ниже, чтобы оплатить и получить полный доступ."
     )
-    await send_method(text, reply_markup=kb)
+    await send(text, reply_markup=kb)
 
 async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = str(update.effective_user.id)
-    msg = update.message.text
+    msg     = update.message.text
 
-    # доступ/лимит
+    # проверка доступа и лимита
     if not has_access(user_id):
         used = used_data.get(user_id, 0)
         if used >= FREE_LIMIT:
-            # предлагать оплатить
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton("Купить доступ", callback_data="BUY_ACCESS")
             ]])
@@ -223,39 +225,39 @@ async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         left = FREE_LIMIT - used_data[user_id]
         await update.message.reply_text(f"🧭 Осталось бесплатных сообщений: {left}")
 
-    # история
+    # обновление истории
     h = context.user_data.setdefault("history", [])
-    h.append({"role": "user", "content": msg})
+    h.append({"role":"user","content": msg})
     history_data[user_id] = h
     save_json(HISTORY_FILE, history_data)
 
-    # память
+    # мягкая память
     memory = extract_memory(h)
     if memory:
         context.user_data["memory"] = memory
 
-    # system prompts
-    tone = detect_tone(msg)
-    sys_prompts = [{"role": "system", "content": SYSTEM_PROMPT}]
-    prev = context.user_data.get("prev_tone")
-    if tone != prev:
+    # формируем prompt
+    tone       = detect_tone(msg)
+    sys_prompts = [{"role":"system","content":SYSTEM_PROMPT}]
+    prev_tone   = context.user_data.get("prev_tone")
+    if tone != prev_tone:
         sys_prompts.append({
-            "role": "system",
+            "role":"system",
             "content": f"Настроение пользователя: {tone}. Подстройтесь под него."
         })
         context.user_data["prev_tone"] = tone
     if "memory" in context.user_data:
         sys_prompts.append({
-            "role": "system",
+            "role":"system",
             "content": f"Ранее упоминалось: {context.user_data['memory']}."
         })
 
     prompt = sys_prompts + h
-    resp = openai.chat.completions.create(model="gpt-4o-mini", messages=prompt)
+    resp   = openai.chat.completions.create(model="gpt-4o-mini", messages=prompt)
     answer = resp.choices[0].message.content
 
-    # сохранить ответ
-    h.append({"role": "assistant", "content": answer})
+    # сохраняем ответ
+    h.append({"role":"assistant","content": answer})
     save_json(HISTORY_FILE, history_data)
 
     await update.message.reply_text(answer)
@@ -268,13 +270,11 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ─── WEBHOOK ЮKassa ────────────────────────────────────────────────────────────
 async def ykassa_webhook(request: web.Request):
-    body = await request.text()
-    sig  = request.headers.get("Content-Sha256", "")
-    try:
-        WebhookHandler.check_authenticity(body, sig)
-    except:
-        return web.Response(status=400, text="bad signature")
-    event = await request.json()
+    body_bytes = await request.read()
+    sig        = request.headers.get("Content-Sha256", "")
+    if not verify_ykassa_signature(body_bytes, sig):
+        return web.Response(status=400, text="invalid signature")
+    event = json.loads(body_bytes.decode())
     if event.get("event") == "payment.succeeded":
         md       = event["object"]["metadata"]
         order_id = md.get("order_id")
@@ -282,7 +282,6 @@ async def ykassa_webhook(request: web.Request):
         if user_id:
             access_data[user_id] = (datetime.now() + timedelta(days=30)).isoformat()
             save_json(ACCESS_FILE, access_data)
-            # уведомление
             await app.bot.send_message(
                 chat_id=int(user_id),
                 text="✅ Оплата получена! Доступ продлён на 30 дней."
@@ -298,10 +297,8 @@ if __name__ == "__main__":
             CommandHandler("start", start),
             MessageHandler(filters.Regex("🧠 Начать сессию"), start),
         ],
-        states={
-            SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_session)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        states={ SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_session)] },
+        fallbacks=[ CommandHandler("cancel", cancel) ],
     )
     app.add_handler(conv)
     app.add_handler(CommandHandler("menu", start))
