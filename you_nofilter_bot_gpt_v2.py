@@ -1,20 +1,31 @@
-
 import os
 import json
-import openai
 import logging
 from datetime import datetime, timedelta
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from collections import Counter
+
+import openai
+from yookassa import Configuration, Payment, WebhookHandler
+from aiohttp import web
+
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     ConversationHandler,
     filters,
 )
-from collections import Counter
 
+# ─── SYSTEM PROMPT ─────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """
 Ты — внимательный и эмпатичный ИИ-психолог.  
 Твоя задача — помочь человеку лучше понять себя, создать ощущение безопасности, тепла и уважительного диалога.
@@ -27,295 +38,280 @@ SYSTEM_PROMPT = """
 
 ★ Твоя речь  
 • Избегай пустых фраз поддержки. Лучше покажи, что понял, и мягко веди к следующему шагу.  
-• Помни, что у тебя есть «психологическая память» — ты уже общался с этим человеком раньше. Не ссылайся на конкретные фразы, но строй ощущение узнавания.
+• Помни, что у тебя есть «психологическая память» — ты уже общался с этим человеком раньше.  
+  Не ссылайся на конкретные фразы, но строй ощущение узнавания.
 
 Детекция «проблемных» сигналов  
-Если в словах пользователя есть забота о своём самочувствии, тревога, упоминание «стресса», «беспокойства», «боль», «утомление», «трудности», «не по себе», «трудно», «тянет назад», «терзает», «утяжеляет» и т.п. — это **сигнал**, что речь идёт о проблеме, а не о банальных желаниях.
+Если в словах пользователя есть забота о своём самочувствии, тревога, упоминание «стресса»,  
+«беспокойства», «боль», «утомление», «трудности» и т.п. — это **сигнал**, что речь идёт  
+о проблеме, а не о банальных желаниях.
 
 Изменение тактики при проблемах  
 Когда обнаружен такой сигнал:  
-  • **Не** задавай повторно одни и те же вопросы поверхностного уровня.  
-  • Вместо этого предложи **копинг-стратегии**: «Как вы обычно справляетесь с этим?», «Какие ресурсы или действия помогают вам чувствовать себя лучше?», «Что вы уже пробовали, чтобы снизить напряжение?».  
-  • Подскажи варианты: дыхательные упражнения, переключение на хобби, физическую активность, установление границ, обращение за поддержкой.
+  • **Не** задавай повторно одни и те же поверхностные вопросы.  
+  • Предложи **копинг-стратегии**: «Как вы обычно справляетесь с этим?»,  
+    «Какие ресурсы помогают вам чувствовать себя лучше?»  
+  • Подскажи варианты: дыхательные упражнения, хобби, физическая активность, поддержка.
 
 ★ Если человек уходит в сторону  
 1. Сначала — короткий отклик на его слова.  
 2. Потом — мягкий вопрос, возвращающий к теме.  
-3. Если он хочет сменить тему — поддержи, помоги связать это с его состоянием.
+3. Если он хочет сменить тему — поддержи и помоги связать это с его состоянием.
 
 ★ Запрещено  
 • Осуждать  
 • Говорить «успокойтесь»  
-• Выставлять диагнозы прямо, но намекать можно и если пользователь спросит прямо как называется такой диагноз, оговорись, что диагнозы ставить не можешь, но в психологической практике есть такой диагноз
+• Выставлять диагнозы прямо, но при запросе упомянуть, что диагноз ставят специалисты.
 
 Обращайся к собеседнику на «вы» — нейтрально, с уважением.
 """
 
+# ─── КОНФИГУРАЦИЯ ──────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")         # Telegram webhook URL
+BASE_URL = os.getenv("BASE_URL")               # e.g. https://your-app.onrender.com
+YKASSA_SHOP_ID = os.getenv("YKASSA_SHOP_ID")
+YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY")
 
 openai.api_key = OPENAI_API_KEY
-logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
 
-SESSION, ASK_CONTACT = range(2)
-YUMONEY_ACCOUNT = "410015497173415"
-FREE_LIMIT = 10
+# ЮKassa
+Configuration.account_id = YKASSA_SHOP_ID
+Configuration.secret_key = YKASSA_SECRET_KEY
 
-DATA_DIR = "/mnt/data"
-USED_FILE = os.path.join(DATA_DIR, "used_data.json")
-ACCESS_FILE = os.path.join(DATA_DIR, "access_data.json")
+# ─── ПУТИ К ФАЙЛАМ ─────────────────────────────────────────────────────────────
+DATA_DIR     = "/mnt/data"
+USED_FILE    = os.path.join(DATA_DIR, "used_data.json")
+ACCESS_FILE  = os.path.join(DATA_DIR, "access_data.json")
 HISTORY_FILE = os.path.join(DATA_DIR, "history_data.json")
 
-access_data = {}
+os.makedirs(DATA_DIR, exist_ok=True)
 
-main_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton("🧠 Начать сессию")],
-        [KeyboardButton("❓ О боте")]
-    ],
-    resize_keyboard=True,
-    one_time_keyboard=False
-)
+def load_json(path):
+    if os.path.exists(path):
+        return json.load(open(path, "r"))
+    return {}
 
-def load_used_data():
-    global used_data
-    if os.path.exists(USED_FILE):
-        with open(USED_FILE, "r") as f:
-            used_data = json.load(f)
-    else:
-        used_data = {}
-
-def save_used_data(data):
-    with open(USED_FILE, "w") as f:
+def save_json(path, data):
+    with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
-def load_access_data():
-    global access_data
-    if os.path.exists(ACCESS_FILE):
-        with open(ACCESS_FILE, "r") as f:
-            access_data = json.load(f)
-    else:
-        access_data = {}
+used_data    = load_json(USED_FILE)
+access_data  = load_json(ACCESS_FILE)
+history_data = load_json(HISTORY_FILE)
 
-def save_access_data():
-    global access_data
-    with open(ACCESS_FILE, "w") as f:
-        json.dump(access_data, f, indent=2)
+# in-memory map order_id → user_id
+orders = {}
 
-load_used_data()
+# ─── КОНСТАНТЫ ─────────────────────────────────────────────────────────────────
+SESSION    = 0
+FREE_LIMIT = 10
 
-def has_access(user_id: int) -> bool:
-    global access_data
-    until_str = access_data.get(str(user_id))
-    if not until_str:
+main_keyboard = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("🧠 Начать сессию")],
+        [KeyboardButton("❓ О боте"), KeyboardButton("💳 Купить доступ")]
+    ],
+    resize_keyboard=True,
+)
+
+# ─── УТИЛИТЫ ───────────────────────────────────────────────────────────────────
+def has_access(user_id: str) -> bool:
+    until = access_data.get(user_id)
+    if not until:
         return False
     try:
-        until = datetime.fromisoformat(until_str)
-    except Exception:
+        return datetime.fromisoformat(until) > datetime.now()
+    except:
         return False
-    return until > datetime.now()
 
-history_data = {}
+def extract_memory(history, limit=8):
+    keywords = []
+    for msg in history[-limit:]:
+        if msg["role"] == "user":
+            for w in msg["content"].lower().split():
+                w = w.strip(",.!?\"«»")
+                if len(w) > 3 and w not in {"это","просто","очень","такой","какой","когда"}:
+                    keywords.append(w)
+    common = [w for w,_ in Counter(keywords).most_common(3)]
+    return ", ".join(common) if common else None
 
-def load_history_data():
-    global history_data
-    if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r") as f:
-            history_data = json.load(f)
-    else:
-        history_data = {}
+def detect_tone(text: str) -> str:
+    t = text.lower()
+    if any(w in t for w in ("ура","круто","рад","счаст")):
+        return "joy"
+    if any(w in t for w in ("груст","тоск","плохо","депресс")):
+        return "sadness"
+    if any(w in t for w in ("злюсь","бесит","ненавиж","раздраж")):
+        return "anger"
+    if any(w in t for w in ("спокойно","норм","ладно","ок")):
+        return "calm"
+    return "neutral"
 
-def save_history_data():
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(history_data, f, indent=2)
-
+# ─── ОБРАБОТЧИКИ БОТА ─────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    context.user_data["history"] = history_data.get(user_id, [])
     await update.message.reply_photo(
         photo="https://i.imgur.com/AH7eK7Z.png",
         caption="Ты. Без фильтра.\n\nМесто, где можно быть настоящим."
     )
-    context.user_data["history"] = []
     await update.message.reply_text(
-        "Хорошо. Напиши, что у тебя внутри — и мы начнём.",
+        "Напишите, что у вас на душе.",
         reply_markup=main_keyboard
     )
-    user_id = str(update.effective_user.id)
-    context.user_data["history"] = history_data.get(user_id, [])
     return SESSION
-
-async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = str(update.effective_user.id)
-    user_msg = update.message.text
-
-    context.user_data.setdefault("history", [])
-
-    if not has_access(int(user_id)):
-        used = used_data.get(user_id, 0)
-
-        if used >= FREE_LIMIT:
-            await update.message.reply_text(
-                f"Ты использовал {FREE_LIMIT} бесплатных сообщений.\n\n"
-                "🔓 Хочешь, чтобы я связался с тобой и открыл доступ?",
-                reply_markup=ReplyKeyboardMarkup(
-                    keyboard=[[KeyboardButton("Хочу"), KeyboardButton("Не надо")]],
-                    resize_keyboard=True,
-                    one_time_keyboard=True
-                )
-            )
-            return ASK_CONTACT
-
-        used_data[user_id] = used + 1
-        save_used_data(used_data)
-        left = FREE_LIMIT - used_data[user_id]
-        await update.message.reply_text(f"🧭 Осталось бесплатных сообщений: {left}")
-
-    context.user_data["history"].append({"role": "user", "content": user_msg})
-    history_data[user_id] = context.user_data["history"]
-    save_history_data()
-
-    # 🧠 Обновляем «мягкую память»
-    memory = extract_memory(context.user_data["history"])
-    if memory:
-        context.user_data["memory"] = memory
-
-    tone = detect_tone(user_msg)
-    prev_tone = context.user_data.get("prev_tone")
-    system_prompts = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-    if tone != prev_tone:
-        system_prompts.append({
-            "role": "system",
-            "content": (
-                f"У пользователя сейчас настроение: {tone}. "
-                "Подстрой лексику и темп под это настроение, "
-                "но сохраняй спокойствие и профессионализм."
-            )
-        })
-        context.user_data["prev_tone"] = tone
-
-    if context.user_data.get("memory"):
-        system_prompts.append({
-            "role": "system",
-            "content": f"Ранее пользователь упоминал: {context.user_data['memory']}. Учитывай это, если поможет лучше понять контекст."
-        })
-
-    prompt = system_prompts + context.user_data["history"]
-
-    response = openai.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=prompt
-    )
-
-    reply = response.choices[0].message.content
-    context.user_data["history"].append({"role": "assistant", "content": reply})
-    await update.message.reply_text(reply)
-
-    return SESSION
-
-async def ask_contact_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    username = update.effective_user.username or "без username"
-    choice = update.message.text.strip().lower()
-
-    if choice == "хочу":
-        text = f"📨 Пользователь @{username} (ID: {user_id}) хочет, чтобы с ним связались."
-        await context.bot.send_message(chat_id=ADMIN_ID, text=text)
-        await update.message.reply_text("Спасибо, я передал твой запрос. Я свяжусь с тобой позже 🤝", reply_markup=main_keyboard)
-    else:
-        await update.message.reply_text("Хорошо, доступ останется ограничен. Если передумаешь — нажми /menu.", reply_markup=main_keyboard)
-
-    return SESSION
-
-def extract_memory(history, limit=8):
-    """Извлекает ключевые слова из последних сообщений пользователя."""
-    keywords = []
-    for msg in history[-limit:]:
-        if msg["role"] == "user":
-            content = msg["content"].lower()
-            for word in content.split():
-                w = word.strip(",.!?\"«»")
-                if len(w) > 3 and w not in {"это", "просто", "очень", "такой", "какой", "когда"}:
-                    keywords.append(w)
-    common = [w for w, _ in Counter(keywords).most_common(3)]
-    return ", ".join(common) if common else None
-
-def detect_tone(text: str) -> str:
-    """Грубо определяем настроение по ключевым словам."""
-    t = text.lower()
-
-    joy     = {"ура", "круто", "супер", "рад", "счастл"}
-    sadness = {"груст", "тоск", "плохо", "тяжело", "депресс"}
-    anger   = {"бесит", "злюсь", "ненавиж", "раздраж"}
-    calm    = {"спокойно", "норм", "ладно", "ок"}
-
-    if any(w in t for w in joy):      return "joy"
-    if any(w in t for w in sadness):  return "sadness"
-    if any(w in t for w in anger):    return "anger"
-    if any(w in t for w in calm):     return "calm"
-    return "neutral"
-# ────────────────────────────────────────────────────────────────
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("Сессия завершена. Нажми «🧠 Начать сессию», чтобы начать заново.")
-    return ConversationHandler.END
-
-# async def buy(...) [ОТКЛЮЧЕНО]
-    pass  # отключено
 
 async def about(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "❓ Этот бот — твой психологический помощник. Он помогает разобраться в себе, задать важные вопросы и посмотреть на себя по-новому. Все разговоры конфиденциальны. Ты. Без фильтра."
+        "❓ Этот бот — ваш ИИ-психолог. Помогает разобраться в себе, задаёт вопросы и предлагает идеи для поддержки."
     )
 
-async def unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global access_data
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Только администратор может выполнять эту команду.")
-        return
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # подмена для callback_query или команды
+    if update.callback_query:
+        await update.callback_query.answer()
+        user_id = update.callback_query.from_user.id
+        send_method = update.callback_query.edit_message_text
+    else:
+        user_id = update.effective_user.id
+        send_method = update.message.reply_text
 
-    parts = update.message.text.split()
-    if len(parts) < 2:
-        await update.message.reply_text("Использование: /unlock <user_id> [дней]")
-        return
+    order_id = f"access_{user_id}_{int(datetime.now().timestamp())}"
+    payment = Payment.create({
+        "amount": {"value": "5.00", "currency": "RUB"},
+        "confirmation": {"type": "redirect", "return_url": BASE_URL},
+        "capture": True,
+        "description": f"Месячный доступ YouNoFilter (пользователь {user_id})",
+        "metadata": {"user_id": str(user_id), "order_id": order_id}
+    })
+    orders[order_id] = str(user_id)
 
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("Оплатить 5 ₽ в месяц", url=payment.confirmation.confirmation_url)
+    ]])
+    text = (
+        "🔒 Бесплатные сессии закончились.\n\n"
+        "💳 Стоимость доступа: 5 ₽ в месяц.\n\n"
+        "Нажмите кнопку ниже, чтобы оплатить и получить полный доступ."
+    )
+    await send_method(text, reply_markup=kb)
+
+async def handle_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = str(update.effective_user.id)
+    msg = update.message.text
+
+    # доступ/лимит
+    if not has_access(user_id):
+        used = used_data.get(user_id, 0)
+        if used >= FREE_LIMIT:
+            # предлагать оплатить
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton("Купить доступ", callback_data="BUY_ACCESS")
+            ]])
+            await update.message.reply_text(
+                "🔒 Вы исчерпали бесплатные сообщения.\n\n"
+                "💳 Стоимость доступа: 5 ₽ в месяц.\n\n"
+                "Нажмите кнопку, чтобы получить ссылку на оплату.",
+                reply_markup=kb
+            )
+            return SESSION
+        used_data[user_id] = used + 1
+        save_json(USED_FILE, used_data)
+        left = FREE_LIMIT - used_data[user_id]
+        await update.message.reply_text(f"🧭 Осталось бесплатных сообщений: {left}")
+
+    # история
+    h = context.user_data.setdefault("history", [])
+    h.append({"role": "user", "content": msg})
+    history_data[user_id] = h
+    save_json(HISTORY_FILE, history_data)
+
+    # память
+    memory = extract_memory(h)
+    if memory:
+        context.user_data["memory"] = memory
+
+    # system prompts
+    tone = detect_tone(msg)
+    sys_prompts = [{"role": "system", "content": SYSTEM_PROMPT}]
+    prev = context.user_data.get("prev_tone")
+    if tone != prev:
+        sys_prompts.append({
+            "role": "system",
+            "content": f"Настроение пользователя: {tone}. Подстройтесь под него."
+        })
+        context.user_data["prev_tone"] = tone
+    if "memory" in context.user_data:
+        sys_prompts.append({
+            "role": "system",
+            "content": f"Ранее упоминалось: {context.user_data['memory']}."
+        })
+
+    prompt = sys_prompts + h
+    resp = openai.chat.completions.create(model="gpt-4o-mini", messages=prompt)
+    answer = resp.choices[0].message.content
+
+    # сохранить ответ
+    h.append({"role": "assistant", "content": answer})
+    save_json(HISTORY_FILE, history_data)
+
+    await update.message.reply_text(answer)
+    return SESSION
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("Сессия завершена.", reply_markup=main_keyboard)
+    return ConversationHandler.END
+
+# ─── WEBHOOK ЮKassa ────────────────────────────────────────────────────────────
+async def ykassa_webhook(request: web.Request):
+    body = await request.text()
+    sig  = request.headers.get("Content-Sha256", "")
     try:
-        user_id = int(parts[1])
-        days = int(parts[2]) if len(parts) > 2 else 30
-    except ValueError:
-        await update.message.reply_text("ID и дни должны быть числами.")
-        return
-    access_data[str(user_id)] = (datetime.now() + timedelta(days=days)).isoformat()
-    save_access_data()
-    access_list = context.application.bot_data.setdefault("access_list", {})
-    access_list[user_id] = datetime.now() + timedelta(days=days)
+        WebhookHandler.check_authenticity(body, sig)
+    except:
+        return web.Response(status=400, text="bad signature")
+    event = await request.json()
+    if event.get("event") == "payment.succeeded":
+        md       = event["object"]["metadata"]
+        order_id = md.get("order_id")
+        user_id  = orders.get(order_id)
+        if user_id:
+            access_data[user_id] = (datetime.now() + timedelta(days=30)).isoformat()
+            save_json(ACCESS_FILE, access_data)
+            # уведомление
+            await app.bot.send_message(
+                chat_id=int(user_id),
+                text="✅ Оплата получена! Доступ продлён на 30 дней."
+            )
+    return web.Response(text="ok")
 
-    await update.message.reply_text(f"✅ Доступ выдан пользователю {user_id} на {days} дней.")
-
+# ─── MAIN ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    load_access_data()
-    load_history_data()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    conv_handler = ConversationHandler(
+    conv = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
-            MessageHandler(filters.Regex("🧠 Начать сессию"), start)
+            MessageHandler(filters.Regex("🧠 Начать сессию"), start),
         ],
         states={
             SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_session)],
-            ASK_CONTACT: [MessageHandler(filters.TEXT, ask_contact_handler)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv_handler)
+    app.add_handler(conv)
     app.add_handler(CommandHandler("menu", start))
-    app.add_handler(CommandHandler("unlock", unlock))
+    app.add_handler(CommandHandler("buy", buy))
+    app.add_handler(MessageHandler(filters.Regex("💳 Купить доступ"), buy))
+    app.add_handler(CallbackQueryHandler(buy, pattern="^BUY_ACCESS$"))
     app.add_handler(MessageHandler(filters.Regex("❓ О боте"), about))
+
+    # регистрируем endpoint для ЮKassa
+    app._web_app.router.add_post("/ykassa-webhook", ykassa_webhook)
 
     app.run_webhook(
         listen="0.0.0.0",
