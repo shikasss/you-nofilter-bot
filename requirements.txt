@@ -1,2 +1,3 @@
 python-telegram-bot[webhooks]==20.8
 openai>=1.0.0
+yookassa>=3.0.0
