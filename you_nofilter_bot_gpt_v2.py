@@ -26,7 +26,7 @@ SYSTEM_PROMPT = """
 # ─── КОНФИГУРАЦИЯ ──────────────────────────────────────────────────────────────
 TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
-BASE_URL          = os.getenv("BASE_URL")           # https://your-app.onrender.com
+WEBHOOK_URL       = os.getenv("WEBHOOK_URL")
 YKASSA_SHOP_ID    = os.getenv("YKASSA_SHOP_ID")
 YKASSA_SECRET_KEY = os.getenv("YKASSA_SECRET_KEY")
 
@@ -127,7 +127,7 @@ async def buy(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     order_id = f"access_{uid}_{int(datetime.now().timestamp())}"
     payment = Payment.create({
         "amount":      {"value":"5.00","currency":"RUB"},
-        "confirmation":{"type":"redirect","return_url":BASE_URL},
+        "confirmation":{"type":"redirect","return_url":WEBHOOK_URL},
         "capture":     True,
         "description": f"Доступ YouNoFilter, пользователь {uid}",
         "metadata":    {"user_id":str(uid),"order_id":order_id}
